@@ -1,35 +1,145 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Revista do Portfólio</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Revista do Portfólio — Visualizador</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 0;
-      background-color: #f4f4f4;
-      text-align: center;
-    }
-    header {
-      background-color: #333;
-      color: white;
-      padding: 1rem;
-      font-size: 1.5rem;
-    }
-    iframe {
-      width: 100%;
-      height: 90vh;
-      border: none;
-    }
+    :root{--bg:#f4f4f4;--bar:#222;--btn:#444;--btnhover:#666}
+    body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:#111}
+    header{background:var(--bar);color:#fff;padding:10px 16px;font-size:1.1rem;display:flex;align-items:center;gap:12px}
+    .controls{margin-left:auto;display:flex;gap:6px;align-items:center}
+    button{background:var(--btn);border:none;color:#fff;padding:6px 8px;border-radius:4px;cursor:pointer}
+    button:hover{background:var(--btnhover)}
+    #viewerWrap{display:flex;flex-direction:column;height:calc(100vh - 52px)}
+    #canvasRow{flex:1;display:flex;align-items:center;justify-content:center;gap:12px;padding:12px;overflow:auto}
+    canvas{background:#fff;box-shadow:0 4px 12px rgba(0,0,0,.15);max-width:48%;height:auto}
+    .info{padding-left:12px;color:#222}
+    input[type="number"]{width:60px;padding:6px;border-radius:4px;border:1px solid #ccc}
+    .small{padding:4px 6px;font-size:0.9rem}
+    .hint{padding:8px;color:#333;background:#fff;border-top:1px solid #ddd}
+    #error{color:#a00;padding:12px}
   </style>
 </head>
 <body>
-  <header>Revista do Portfólio</header>
+  <header>
+    Revista do Portfólio
+    <div class="controls">
+      <button id="prev">◀︎ Anterior</button>
+      <button id="next">Próximo ▶︎</button>
+      <span class="info">Página: <input id="pageNumber" type="number" min="1" value="1" /></span>
+      <button id="zoomOut" class="small">−</button>
+      <span id="scaleLabel">100%</span>
+      <button id="zoomIn" class="small">+</button>
+    </div>
+  </header>
 
-  <!-- Iframe carregando o visualizador -->
-  <iframe src="web/viewer.html?file=https://320a23f6-aa94-42b1-b300-097e5cbcc882.usrfiles.com/ugd/320a23_d56f3a8757464daa9eeb4af2689c4191.pdf"></iframe>
+  <div id="viewerWrap">
+    <div id="canvasRow">
+      <canvas id="leftCanvas"></canvas>
+      <canvas id="rightCanvas"></canvas>
+    </div>
+    <div class="hint">Use os botões "Anterior/Próximo" para navegar por spreads (2 páginas). Se o PDF vier de outro domínio e não carregar, veja a instrução embaixo.</div>
+    <div id="error"></div>
+  </div>
 
+  <!-- PDF.js via CDN (versão estável 2.x) -->
+  <script src="https://unpkg.com/pdfjs-dist@2.16.105/build/pdf.min.js"></script>
+  <script>
+    // ======== CONFIGURAÇÃO ========
+    // Link do seu PDF (tente primeiro o link remoto; se der CORS, eu explico como colocar no repo)
+    const DEFAULT_PDF = "https://320a23f6-aa94-42b1-b300-097e5cbcc882.usrfiles.com/ugd/320a23_d56f3a8757464daa9eeb4af2689c4191.pdf";
+    // Se preferir, faça upload do PDF para o repositório em /pdf/revista.pdf e mude abaixo para "pdf/revista.pdf"
+
+    // worker (obrigatório)
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://unpkg.com/pdfjs-dist@2.16.105/build/pdf.worker.min.js";
+
+    // elementos
+    const leftCanvas = document.getElementById("leftCanvas");
+    const rightCanvas = document.getElementById("rightCanvas");
+    const prevBtn = document.getElementById("prev");
+    const nextBtn = document.getElementById("next");
+    const pageNumberInput = document.getElementById("pageNumber");
+    const zoomIn = document.getElementById("zoomIn");
+    const zoomOut = document.getElementById("zoomOut");
+    const scaleLabel = document.getElementById("scaleLabel");
+    const errorDiv = document.getElementById("error");
+
+    // estado
+    let pdfDoc = null;
+    let scale = 1.0; // zoom
+    let spreadIndex = 0; // cada spread = 2 páginas; spreadIndex=0 => páginas 1 e 2
+
+    // Carrega o PDF
+    async function loadPDF(url) {
+      errorDiv.textContent = "";
+      try {
+        const loadingTask = pdfjsLib.getDocument(url);
+        pdfDoc = await loadingTask.promise;
+        pageNumberInput.max = pdfDoc.numPages;
+        renderSpread(spreadIndex);
+      } catch (err) {
+        console.error(err);
+        errorDiv.innerHTML = "Erro ao carregar PDF. Possível problema de CORS se o PDF estiver em outro domínio.<br>Erro: " + (err.message || err);
+        // dica: se for CORS, faça upload do PDF na pasta /pdf do repositório e altere DEFAULT_PDF para 'pdf/revista.pdf'
+      }
+    }
+
+    // renderiza página para canvas
+    async function renderPageToCanvas(pageNum, canvas) {
+      if (!pdfDoc || pageNum < 1 || pageNum > pdfDoc.numPages) {
+        canvas.style.display = "none";
+        return;
+      }
+      canvas.style.display = "";
+      const page = await pdfDoc.getPage(pageNum);
+      const viewport = page.getViewport({ scale });
+      // limitar tamanho máximo para caber na tela (respondividade)
+      const maxWidth = Math.min(window.innerWidth * 0.48, viewport.width);
+      const adjustedScale = (maxWidth / viewport.width) * scale;
+      const vp = page.getViewport({ scale: adjustedScale });
+
+      const ctx = canvas.getContext("2d");
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    }
+
+    // renderiza o spread (duas páginas)
+    async function renderSpread(index) {
+      if (!pdfDoc) return;
+      const leftPage = index * 2 + 1;
+      const rightPage = leftPage + 1;
+      // segurança: se leftPage maior que total, mova para último spread disponível
+      if (leftPage > pdfDoc.numPages) {
+        spreadIndex = Math.max(0, Math.floor((pdfDoc.numPages - 1) / 2));
+      }
+      await renderPageToCanvas(leftPage, leftCanvas);
+      await renderPageToCanvas(rightPage, rightCanvas);
+      pageNumberInput.value = leftPage;
+      scaleLabel.textContent = Math.round(scale * 100) + "%";
+    }
+
+    // navegação
+    prevBtn.onclick = () => { if (spreadIndex > 0) { spreadIndex--; renderSpread(spreadIndex); } };
+    nextBtn.onclick = () => {
+      const maxSpread = Math.floor((pdfDoc.numPages - 1) / 2);
+      if (spreadIndex < maxSpread) { spreadIndex++; renderSpread(spreadIndex); }
+    };
+    pageNumberInput.onchange = () => {
+      let v = parseInt(pageNumberInput.value) || 1;
+      v = Math.max(1, Math.min(v, pdfDoc.numPages));
+      spreadIndex = Math.floor((v - 1) / 2);
+      renderSpread(spreadIndex);
+    };
+    zoomIn.onclick = () => { scale = Math.min(3, scale + 0.1); renderSpread(spreadIndex); };
+    zoomOut.onclick = () => { scale = Math.max(0.2, scale - 0.1); renderSpread(spreadIndex); };
+
+    // redimensionar ao mudar a janela
+    window.addEventListener("resize", () => { renderSpread(spreadIndex); });
+
+    // inicia
+    loadPDF(DEFAULT_PDF);
+  </script>
 </body>
 </html>
